@@ -23,9 +23,12 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Build and Push
+      - name: Build and Push (stable network)
         run: |
           docker buildx build \
+            --network=host \
+            --dns=8.8.8.8 \
+            --dns=1.1.1.1 \
             --push \
             -t ghcr.io/${{ github.repository_owner }}/ytdlp-runtime:latest \
             .
