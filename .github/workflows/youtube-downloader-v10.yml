@@ -4,17 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       youtube_url:
-        description: 'YouTube video URL'
         required: true
         type: string
       quality:
-        description: 'Video quality (best, 1080, 720, 480, audio)'
-        required: false
         default: 'best'
         type: string
       split_threshold_mb:
-        description: 'Split files larger than this MB (0 = never split)'
-        required: false
         default: '90'
         type: string
 
@@ -24,22 +19,14 @@ jobs:
     permissions:
       contents: write
 
-    container:
-      image: ghcr.io/aceclasher3/ytdlp-runtime:latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Start WARP Container
+      # ✅ WARP روی host اجرا میشه
+      - name: Start WARP
         run: |
-          echo "🚀 Starting WARP..."
-
-          docker network create warp-net || true
-
           docker run -d \
             --name warp \
-            --network warp-net \
             -p 1080:1080 \
             --cap-add NET_ADMIN \
             caomingjun/warp
@@ -47,57 +34,62 @@ jobs:
           for i in {1..15}; do
             RESULT=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace || true)
             if echo "$RESULT" | grep -q "warp="; then
-              echo "✅ WARP active"
+              echo "✅ WARP ready"
               break
             fi
             sleep 2
           done
 
-      - name: Download YouTube Video
+      # ✅ اجرای yt-dlp داخل Docker image
+      - name: Run Downloader in Container
         run: |
-          set -e
+          docker run --rm \
+            --network host \
+            -v $PWD:/workspace \
+            ghcr.io/aceclasher3/ytdlp-runtime:latest \
+            bash -c '
+              set -e
 
-          URL="${{ github.event.inputs.youtube_url }}"
-          QUALITY="${{ github.event.inputs.quality }}"
-          SPLIT_MB="${{ github.event.inputs.split_threshold_mb }}"
-          SPLIT_BYTES=$((SPLIT_MB * 1024 * 1024))
+              URL="${{ github.event.inputs.youtube_url }}"
+              QUALITY="${{ github.event.inputs.quality }}"
+              SPLIT_MB="${{ github.event.inputs.split_threshold_mb }}"
+              SPLIT_BYTES=$((SPLIT_MB * 1024 * 1024))
 
-          mkdir -p videos tmp
+              mkdir -p videos tmp
 
-          case "$QUALITY" in
-            audio) FORMAT="bestaudio" ;;
-            best) FORMAT="bestvideo+bestaudio/best" ;;
-            1080) FORMAT="bestvideo[height<=1080]+bestaudio/best" ;;
-            720) FORMAT="bestvideo[height<=720]+bestaudio/best" ;;
-            480) FORMAT="bestvideo[height<=480]+bestaudio/best" ;;
-            *) FORMAT="best" ;;
-          esac
+              case "$QUALITY" in
+                audio) FORMAT="bestaudio" ;;
+                best) FORMAT="bestvideo+bestaudio/best" ;;
+                1080) FORMAT="bestvideo[height<=1080]+bestaudio/best" ;;
+                720) FORMAT="bestvideo[height<=720]+bestaudio/best" ;;
+                480) FORMAT="bestvideo[height<=480]+bestaudio/best" ;;
+                *) FORMAT="best" ;;
+              esac
 
-          yt-dlp \
-            --proxy "socks5://127.0.0.1:1080" \
-            --format "$FORMAT" \
-            --merge-output-format mp4 \
-            --output "tmp/%(title)s.%(ext)s" \
-            --no-playlist \
-            --retries 10 \
-            --fragment-retries 10 \
-            "$URL"
+              yt-dlp \
+                --proxy "socks5://127.0.0.1:1080" \
+                --format "$FORMAT" \
+                --merge-output-format mp4 \
+                --output "tmp/%(title)s.%(ext)s" \
+                --no-playlist \
+                --retries 10 \
+                --fragment-retries 10 \
+                "$URL"
 
-          for FILE in tmp/*; do
-            [ -f "$FILE" ] || continue
-            SIZE=$(stat -c%s "$FILE")
-            NAME=$(basename "$FILE")
+              for FILE in tmp/*; do
+                [ -f "$FILE" ] || continue
+                SIZE=$(stat -c%s "$FILE")
+                NAME=$(basename "$FILE")
 
-            if [ "$SPLIT_BYTES" -gt 0 ] && [ "$SIZE" -gt "$SPLIT_BYTES" ]; then
-              echo "✂️ Splitting $NAME"
-
-              cd tmp
-              zip -0 -s "${SPLIT_MB}m" "../videos/${NAME}.zip" "$NAME"
-              cd ..
-            else
-              mv "$FILE" "videos/$NAME"
-            fi
-          done
+                if [ "$SPLIT_BYTES" -gt 0 ] && [ "$SIZE" -gt "$SPLIT_BYTES" ]; then
+                  cd tmp
+                  zip -0 -s "${SPLIT_MB}m" "../videos/${NAME}.zip" "$NAME"
+                  cd ..
+                else
+                  mv "$FILE" "videos/$NAME"
+                fi
+              done
+            '
 
       - name: Commit & Push
         run: |
@@ -107,7 +99,7 @@ jobs:
           git add videos
           git commit -m "YouTube download [skip ci]" || exit 0
           git push
-          
+
       - name: Stop WARP
         if: always()
         run: |
