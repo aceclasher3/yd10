@@ -25,7 +25,7 @@ jobs:
       contents: write
 
     container:
-      image: ghcr.io/YOUR_USERNAME/ytdlp-runtime:latest
+      image: ghcr.io/aceclasher3/ytdlp-runtime:latest
 
     steps:
       - name: Checkout
