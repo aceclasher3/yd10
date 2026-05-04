@@ -2,10 +2,10 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Use reliable DNS + IPv4 for apt only
+# Fix apt IPv4 فقط برای پایداری
 RUN printf 'Acquire::ForceIPv4 "true";\nAcquire::Retries "3";\n' > /etc/apt/apt.conf.d/99fix
 
-# Install dependencies
+# Install deps
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
     ffmpeg \
@@ -16,6 +16,4 @@ RUN apt-get update -qq && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY . .
-
 CMD ["bash"]
