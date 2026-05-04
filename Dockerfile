@@ -2,20 +2,24 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 🔥 Fix CI network issues (THIS is the real fix)
+# 🔥 Fix IPv4 + retries ONLY (safe)
 RUN printf 'Acquire::ForceIPv4 "true";\nAcquire::Retries "5";\n' > /etc/apt/apt.conf.d/99fix
 
-# 🔐 Ensure correct official repos (DO NOT use custom mirrors)
+# 📦 FIRST: update using default repo (HTTP is OK here)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# 🔐 NOW safe to switch to HTTPS if you want
 RUN sed -i 's|http://|https://|g' /etc/apt/sources.list
 
-# 📦 Install dependencies
+# 🔄 refresh package lists again safely
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
     jq \
     zip \
-    ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . .
