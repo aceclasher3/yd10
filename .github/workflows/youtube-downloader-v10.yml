@@ -1,4 +1,4 @@
-name: 01- 🎬 Youtube Downloader 
+name: 01- 🎬 Youtube Downloader
 
 on:
   workflow_dispatch:
@@ -24,237 +24,92 @@ jobs:
     permissions:
       contents: write
 
+    container:
+      image: ghcr.io/YOUR_USERNAME/ytdlp-runtime:latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      # ================= TIMER HELPER =================
-      - name: Start step timer
-        run: echo "STEP_START=$(date +%s)" >> $GITHUB_ENV
 
       - name: Start WARP Container
         run: |
-          START=$(date +%s)
-          echo "🚀 Starting Cloudflare WARP container..."
+          echo "🚀 Starting WARP..."
 
           docker network create warp-net || true
 
           docker run -d \
             --name warp \
-            --restart=always \
             --network warp-net \
             -p 1080:1080 \
             --cap-add NET_ADMIN \
-            --sysctl net.ipv6.conf.all.disable_ipv6=0 \
-            --sysctl net.ipv4.conf.all.src_valid_mark=1 \
-            -v warp-data:/var/lib/cloudflare-warp \
             caomingjun/warp
 
-          echo "⏳ Waiting for WARP (fast check loop)..."
-
           for i in {1..15}; do
-            RESULT=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace 2>/dev/null || echo "failed")
-
-            if echo "$RESULT" | grep -qE "warp=(on|plus)"; then
-              echo "✅ WARP is active!"
+            RESULT=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace || true)
+            if echo "$RESULT" | grep -q "warp="; then
+              echo "✅ WARP active"
               break
             fi
-
-            echo "⏳ Attempt $i/15..."
             sleep 2
           done
 
-          END=$(date +%s)
-          echo "⏱️ WARP step took: $((END-START)) seconds"
-
-      - name: Setup dependencies (optimized)
-        run: |
-          START=$(date +%s)
-
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg
-
-          echo "curl/zip/jq likely preinstalled, skipping..."
-
-          END=$(date +%s)
-          echo "⏱️ Dependencies step: $((END-START)) seconds"
-
-      - name: Download yt-dlp binary
-        run: |
-          START=$(date +%s)
-
-          curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o yt-dlp
-          chmod +x yt-dlp
-          sudo mv yt-dlp /usr/local/bin/yt-dlp
-
-          END=$(date +%s)
-          echo "⏱️ yt-dlp install: $((END-START)) seconds"
-
       - name: Download YouTube Video
         run: |
-          START=$(date +%s)
+          set -e
 
           URL="${{ github.event.inputs.youtube_url }}"
           QUALITY="${{ github.event.inputs.quality }}"
           SPLIT_MB="${{ github.event.inputs.split_threshold_mb }}"
-          SPLIT_BYTES=$(( SPLIT_MB * 1024 * 1024 ))
+          SPLIT_BYTES=$((SPLIT_MB * 1024 * 1024))
 
-          mkdir -p videos tmp_downloads
+          mkdir -p videos tmp
 
-          echo "🏷️  AceWP YouTube Downloader"
-          echo "🌐 https://AceWP.ir"
-          echo ""
-          echo "📹 Downloading: $URL"
-          echo "📊 Quality: $QUALITY"
-
-          # Set format based on quality
           case "$QUALITY" in
-            "audio")
-              FORMAT="bestaudio"
-              ;;
-            "best")
-              FORMAT="bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
-              ;;
-            "1080")
-              FORMAT="bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best"
-              ;;
-            "720")
-              FORMAT="bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best"
-              ;;
-            "480")
-              FORMAT="bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best"
-              ;;
-            *)
-              FORMAT="bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
-              ;;
+            audio) FORMAT="bestaudio" ;;
+            best) FORMAT="bestvideo+bestaudio/best" ;;
+            1080) FORMAT="bestvideo[height<=1080]+bestaudio/best" ;;
+            720) FORMAT="bestvideo[height<=720]+bestaudio/best" ;;
+            480) FORMAT="bestvideo[height<=480]+bestaudio/best" ;;
+            *) FORMAT="best" ;;
           esac
 
-          # Download through WARP SOCKS5 proxy
           yt-dlp \
             --proxy "socks5://127.0.0.1:1080" \
             --format "$FORMAT" \
             --merge-output-format mp4 \
-            --output "tmp_downloads/%(title)s.%(ext)s" \
+            --output "tmp/%(title)s.%(ext)s" \
             --no-playlist \
             --retries 10 \
             --fragment-retries 10 \
-            --concurrent-fragments 4 \
-            --no-check-certificates \
-            --prefer-free-formats \
-            --no-warnings \
-            "$URL" || {
-              echo "❌ yt-dlp failed, trying alternative method..."
+            "$URL"
 
-              # Try with different user agent
-              yt-dlp \
-                --proxy "socks5://127.0.0.1:1080" \
-                --format "$FORMAT" \
-                --merge-output-format mp4 \
-                --output "tmp_downloads/%(title)s.%(ext)s" \
-                --no-playlist \
-                --retries 10 \
-                --fragment-retries 10 \
-                --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-                --extractor-args "youtube:player_client=android" \
-                "$URL"
-            }
-
-          echo "✅ Download complete!"
-          ls -la tmp_downloads/
-
-          # Handle file splitting
-          for FILE in tmp_downloads/*; do
+          for FILE in tmp/*; do
             [ -f "$FILE" ] || continue
             SIZE=$(stat -c%s "$FILE")
-            BASENAME=$(basename "$FILE")
-
-            echo "📁 Processing: $BASENAME ($(( SIZE / 1024 / 1024 ))MB)"
+            NAME=$(basename "$FILE")
 
             if [ "$SPLIT_BYTES" -gt 0 ] && [ "$SIZE" -gt "$SPLIT_BYTES" ]; then
-              echo "✂️ Splitting $BASENAME into ${SPLIT_MB}MB parts..."
-              OUTPUT_ZIP="videos/${BASENAME}.zip"
-              # ensure clean state (IMPORTANT)
-              rm -f "${OUTPUT_ZIP}" "${OUTPUT_ZIP}".z* 2>/dev/null || true
+              echo "✂️ Splitting $NAME"
 
-              echo "✂️ Splitting $BASENAME into ${SPLIT_MB}MB parts..."
-
-              cd tmp_downloads
-              zip -0 -s "${SPLIT_MB}m" "../${OUTPUT_ZIP}" "$(basename "$FILE")"
-              cd -
-              
-              echo "✅ Created $(ls videos/${BASENAME}.z* 2>/dev/null | wc -l) parts"
+              cd tmp
+              zip -0 -s "${SPLIT_MB}m" "../videos/${NAME}.zip" "$NAME"
+              cd ..
             else
-              cp "$FILE" "videos/$BASENAME"
-              echo "✅ Copied as-is (no split needed)"
+              mv "$FILE" "videos/$NAME"
             fi
           done
-          rm -rf tmp_downloads
-          
-          END=$(date +%s)
-          echo "⏱️ Download step: $((END-START)) seconds"
 
       - name: Commit & Push
         run: |
-          START=$(date +%s)
-
-          BRANCH="${GITHUB_REF_NAME}"
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          echo "🏷️  AceWP (https://AceWP.ir) - Preparing to commit files"
-
-          # Check if videos folder has any files
-          if [ ! -d "videos" ] || [ -z "$(ls -A videos 2>/dev/null)" ]; then
-            echo "❌ No files to commit in videos folder"
-            exit 1
-          fi
-
-          # Collect all new/modified files
-          mapfile -t ALL_FILES < <(find videos -type f -name "*")
-
-          TOTAL=${#ALL_FILES[@]}
-          echo "📦 Total files to push: $TOTAL"
-
-          if [ "$TOTAL" -eq 0 ]; then
-            echo "Nothing to commit"
-            exit 0
-          fi
-
-          BATCH_SIZE=5
-          BATCH_NUM=0
-
-          for (( i=0; i<TOTAL; i+=BATCH_SIZE )); do
-            BATCH_NUM=$(( BATCH_NUM + 1 ))
-            BATCH=("${ALL_FILES[@]:i:BATCH_SIZE}")
-
-            echo "🚀 Pushing batch $BATCH_NUM: files $((i+1))–$(( i + ${#BATCH[@]} )) of $TOTAL"
-
-            git add "${BATCH[@]}"
-            git commit -m "[AceWP] YouTube download — batch $BATCH_NUM [skip ci]"
-
-            # Pull with rebase before each push
-            git pull --rebase origin "$BRANCH" || true
-            git push origin HEAD:"$BRANCH"
-
-            echo "✅ Batch $BATCH_NUM pushed"
-          done
-
-          echo "🎉 All $TOTAL files pushed — AceWP (https://AceWP.ir)"
-
-          END=$(date +%s)
-          echo "⏱️ Commit+Push: $((END-START)) seconds"
-      
-      - name: Stop WARP Container
+          git add videos
+          git commit -m "YouTube download [skip ci]" || exit 0
+          git push
+          
+      - name: Stop WARP
         if: always()
         run: |
-          START=$(date +%s)
-
           docker stop warp || true
           docker rm warp || true
-
-          END=$(date +%s)
-          echo "⏱️ WARP stop: $((END-START)) seconds"
-
-      
