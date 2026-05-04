@@ -1,0 +1,151 @@
+name: 01- 🎬 Youtube Downloader 
+
+on:
+  workflow_dispatch:
+    inputs:
+      youtube_url:
+        description: 'YouTube video URL'
+        required: true
+        type: string
+      quality:
+        description: 'Video quality (best, 1080, 720, 480, audio)'
+        required: false
+        default: 'best'
+        type: string
+      split_threshold_mb:
+        description: 'Split files larger than this MB (0 = never split)'
+        required: false
+        default: '90'
+        type: string
+
+jobs:
+  download-youtube:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup dependencies (fast mode)
+        run: |
+          START=$(date +%s)
+
+          echo "Checking ffmpeg..."
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          else
+            echo "ffmpeg already exists"
+          fi
+
+          sudo apt-get install -y zip curl jq
+
+          END=$(date +%s)
+          echo "⏱️ Dependencies step: $((END-START)) seconds"
+
+      - name: Download yt-dlp binary
+        run: |
+          START=$(date +%s)
+
+          curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o yt-dlp
+          chmod +x yt-dlp
+          sudo mv yt-dlp /usr/local/bin/yt-dlp
+
+          END=$(date +%s)
+          echo "⏱️ yt-dlp install: $((END-START)) seconds"
+
+      - name: Download YouTube Video
+        run: |
+          START=$(date +%s)
+
+          URL="${{ github.event.inputs.youtube_url }}"
+          QUALITY="${{ github.event.inputs.quality }}"
+          SPLIT_MB="${{ github.event.inputs.split_threshold_mb }}"
+          SPLIT_BYTES=$(( SPLIT_MB * 1024 * 1024 ))
+
+          mkdir -p videos tmp_downloads
+
+          echo "📹 Downloading: $URL"
+          echo "📊 Quality: $QUALITY"
+
+          case "$QUALITY" in
+            "audio") FORMAT="bestaudio" ;;
+            "1080") FORMAT="bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best" ;;
+            "720") FORMAT="bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best" ;;
+            "480") FORMAT="bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best" ;;
+            *) FORMAT="bestvideo[ext=mp4]+bestaudio[ext=m4a]/best" ;;
+          esac
+
+          yt-dlp \
+            --format "$FORMAT" \
+            --merge-output-format mp4 \
+            --output "tmp_downloads/%(title)s.%(ext)s" \
+            --no-playlist \
+            --retries 10 \
+            --fragment-retries 10 \
+            --concurrent-fragments 4 \
+            --no-check-certificates \
+            --prefer-free-formats \
+            --no-warnings \
+            "$URL" || {
+              echo "❌ Primary download failed, retrying..."
+
+              yt-dlp \
+                --format "$FORMAT" \
+                --merge-output-format mp4 \
+                --output "tmp_downloads/%(title)s.%(ext)s" \
+                --no-playlist \
+                --retries 10 \
+                --fragment-retries 10 \
+                --user-agent "Mozilla/5.0" \
+                --extractor-args "youtube:player_client=android" \
+                "$URL"
+            }
+
+          echo "✅ Download complete!"
+          ls -la tmp_downloads/
+
+          for FILE in tmp_downloads/*; do
+            [ -f "$FILE" ] || continue
+            SIZE=$(stat -c%s "$FILE")
+            BASENAME=$(basename "$FILE")
+
+            echo "📁 Processing: $BASENAME ($(( SIZE / 1024 / 1024 ))MB)"
+
+            if [ "$SPLIT_BYTES" -gt 0 ] && [ "$SIZE" -gt "$SPLIT_BYTES" ]; then
+              echo "✂️ Splitting $BASENAME..."
+              OUTPUT_ZIP="videos/${BASENAME}.zip"
+              rm -f "${OUTPUT_ZIP}" "${OUTPUT_ZIP}".z* 2>/dev/null || true
+
+              cd tmp_downloads
+              zip -0 -s "${SPLIT_MB}m" "../${OUTPUT_ZIP}" "$(basename "$FILE")"
+              cd -
+
+            else
+              cp "$FILE" "videos/$BASENAME"
+              echo "✅ Copied as-is"
+            fi
+          done
+
+          rm -rf tmp_downloads
+
+          END=$(date +%s)
+          echo "⏱️ Download step: $((END-START)) seconds"
+
+      - name: Commit & Push
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          if [ ! -d "videos" ] || [ -z "$(ls -A videos 2>/dev/null)" ]; then
+            echo "❌ No files to commit"
+            exit 1
+          fi
+
+          git add videos
+          git commit -m "[YouTube Downloader] update files [skip ci]" || echo "No changes"
+          git push
